@@ -34,3 +34,5 @@ install sentence-transformers
 install uvicorn fastapi
 `pip install uvicorn fastapi`
 
+install beautifulsoup4 requests
+`pip install beautifulsoup4 requests`

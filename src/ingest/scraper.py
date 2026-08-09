@@ -1,11 +1,11 @@
-# src/scraper.py
+# Fetch a single patent from Google Patents and save it as new_<doc>.json for loader.py to pick up
 import json
 import requests
 from bs4 import BeautifulSoup
 from pathlib import Path
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 import config
 
@@ -16,55 +16,78 @@ HEADERS = {
     )
 }
 
-def fetch_patent(doc_number):
-    # Google Patents URL for US patents
-    url = f"https://patents.google.com/patent/US{doc_number}A1/en"
-    response = requests.get(url, headers=HEADERS)
-    if response.status_code != 200:
-        return None
-    soup = BeautifulSoup(response.text, "html.parser")
+# US application/grant kind codes to try, in order.
+# Applications are usually A1; granted patents are B1/B2. 
+KIND_CODES = ["A1", "B2", "B1", "A2", ""]
 
-    # title: meta fallback
+REQUEST_TIMEOUT = 15
+
+
+def _get_soup(doc_number):
+    """Try the URL with each kind code until one returns 200; return soup or None."""
+    for kind in KIND_CODES:
+        url = f"https://patents.google.com/patent/US{doc_number}{kind}/en"
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as e:
+            print(f"  request error for {url}: {e}")
+            continue
+        if response.status_code == 200:
+            return BeautifulSoup(response.text, "html.parser")
+    return None
+
+
+def fetch_patent(doc_number):
+    soup = _get_soup(doc_number)
+    if soup is None:
+        return None
+
+    # title: meta first, fall back to itemprop span
     title_meta = soup.find("meta", {"name": "DC.title"})
-    if title_meta:
+    if title_meta and title_meta.get("content"):
         title = title_meta["content"].strip()
     else:
         tag = soup.find("span", itemprop="title")
         title = tag.get_text(strip=True) if tag else ""
 
-    # abstract: section fallback to meta
+    # abstract: section first, fall back to meta description
     abstract_section = soup.find("section", {"itemprop": "abstract"})
     if abstract_section:
         abstract = abstract_section.get_text(separator=" ", strip=True)
     else:
         meta = soup.find("meta", {"name": "DC.description"})
-        abstract = meta["content"].strip() if meta else ""
+        abstract = meta["content"].strip() if meta and meta.get("content") else ""
 
-    # claims
+    # claims: each claim is a div.claim inside the claims section
     claims = []
     claims_section = soup.find("section", {"itemprop": "claims"})
     if claims_section:
         for claim in claims_section.find_all("div", class_="claim"):
-            claims.append(claim.get_text(separator=" ", strip=True))
+            text = claim.get_text(separator=" ", strip=True)
+            if text:
+                claims.append(text)
 
-    # classification
-    classification_codes = set()
-    for code_elem in soup.select('[itemprop="code"]'):
-        code_text = code_elem.get_text(strip=True)
-        if code_text:
-            classification_codes.add(code_text)
+    # classification: codes render as a hierarchy (B -> B60 -> B60B -> B60B7/00-> B60B7/0013) via itemprop="Code" (capital C). Keep the deepest (longest)
+    # code as the single primary classification.
+    codes = [
+        el.get_text(strip=True)
+        for el in soup.select('[itemprop="Code"]')
+        if el.get_text(strip=True)
+    ]
+    classification = max(codes, key=len) if codes else ""
 
-    # return same structure as in the JSON files, with empty detailed_description and bibtex
+    # same structure as the JSON dataset; fields not on the page are left empty
     return {
         "doc_number": doc_number,
         "title": title,
         "abstract": abstract,
         "claims": claims,
         "detailed_description": [],
-        "classification": sorted(list(classification_codes))[0] if classification_codes else "",
+        "classification": classification,
         "bibtex": "",
         "filename": "",
     }
+
 
 def save_patent(patent):
     output_dir = Path(config.DATA_DIR)
@@ -80,4 +103,3 @@ def save_patent(patent):
     with open(output_file, "w") as f:
         json.dump(existing, f, indent=2)
     print(f"Saved to {output_file}")
-
