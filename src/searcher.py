@@ -22,27 +22,26 @@ def get_search_model():
     return _model, _prefix
 
 def encode_query(query):
+    # prepend the BGE instruction
     model, prefix = get_search_model()
     return model.encode(prefix + query, normalize_embeddings=True).tolist()
 
-# ---------- 3 search channels ----------
+# ---------- search channels ----------
 
 def keyword_search(cur, query, top_k=10, filters=None):
     where, params = build_filters(filters)
-    or_query = " | ".join(query.split())
-    #print(f"DEBUG keyword query: '{or_query}'")
+    # websearch_to_tsquery parses the raw query itself 
+    # (handles quotes, OR, -, stray punctuation) 
     try:
         cur.execute(f"""
             SELECT id, doc_number, title, abstract,
-                   ts_rank(abstract_tsv, to_tsquery('english', %s)) AS score
+                   ts_rank(abstract_tsv, websearch_to_tsquery('english', %s)) AS score
             FROM patents
-            WHERE abstract_tsv @@ to_tsquery('english', %s) {where}
+            WHERE abstract_tsv @@ websearch_to_tsquery('english', %s) {where}
             ORDER BY score DESC
             LIMIT %s
-        """, [or_query, or_query] + params + [top_k])
-        results = cur.fetchall()
-        #print(f"DEBUG keyword results: {len(results)}")
-        return results
+        """, [query, query] + params + [top_k])
+        return cur.fetchall()
     except Exception as e:
         print(f"DEBUG keyword error: {e}")
         conn = cur.connection
@@ -63,23 +62,51 @@ def semantic_search(cur, query, top_k=10, filters=None):
     """, [query_vec] + params + [query_vec, top_k])
     return cur.fetchall()
 
-def hybrid_search(cur, query, top_k=10, filters=None, semantic_weight=0.7):
-    """semantic + keyword search, using Reciprocal Rank Fusion (RRF)"""
+def claim_search(cur, query, top_k=10, filters=None, claim1_boost=1.5):
+    """per-claim vector search; claim1 (claim_index = 0) is boosted at query time.
+    Scores per patent = best boosted claim similarity."""
+    query_vec = encode_query(query)
+    where, params = build_filters(filters)  # clauses start with "AND ", patents columns
+    cur.execute(f"""
+        SELECT p.id, p.doc_number, p.title, p.abstract,
+               MAX((1 - (ce.embedding <=> %s::vector))
+                   * CASE WHEN ce.claim_index = 0 THEN %s ELSE 1.0 END) AS score
+        FROM claim_embeddings ce
+        JOIN patents p ON p.id = ce.patent_id
+        WHERE TRUE {where}
+        GROUP BY p.id, p.doc_number, p.title, p.abstract
+        ORDER BY score DESC
+        LIMIT %s
+    """, [query_vec, claim1_boost] + params + [top_k])
+    return cur.fetchall()
+
+
+def hybrid_search(cur, query, top_k=10, filters=None,
+                  weights=None, claim1_boost=None):
+    """semantic + keyword + claim search, fused with Reciprocal Rank Fusion (RRF)"""
+    if weights is None:
+        weights = config.RRF_WEIGHTS
+    if claim1_boost is None:
+        claim1_boost = config.CLAIM1_BOOST
+
     sem_results = semantic_search(cur, query, top_k=top_k * 2, filters=filters)
     kw_results = keyword_search(cur, query, top_k=top_k * 2, filters=filters)
+    claim_results = claim_search(cur, query, top_k=top_k * 2, filters=filters,
+                                 claim1_boost=claim1_boost)
 
-    # Reciprocal Rank Fusion
-    k = 60  # RRF constant
+    # Reciprocal Rank Fusion: each channel contributes weight / (k + rank)
+    k = config.RRF_K  
     scores = {}
     meta = {}
 
-    for rank, (pid, doc_num, title, abstract, score) in enumerate(sem_results):
-        scores[pid] = scores.get(pid, 0) + semantic_weight / (k + rank + 1)
-        meta[pid] = (doc_num, title, abstract)
+    def fuse(results, weight):
+        for rank, (pid, doc_num, title, abstract, _score) in enumerate(results):
+            scores[pid] = scores.get(pid, 0) + weight / (k + rank + 1)
+            meta[pid] = (doc_num, title, abstract)
 
-    for rank, (pid, doc_num, title, abstract, score) in enumerate(kw_results):
-        scores[pid] = scores.get(pid, 0) + (1 - semantic_weight) / (k + rank + 1)
-        meta[pid] = (doc_num, title, abstract)
+    fuse(sem_results, weights["semantic"])
+    fuse(kw_results, weights["keyword"])
+    fuse(claim_results, weights["claim"])
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
     results = []
@@ -120,6 +147,8 @@ def search(query, mode="hybrid", top_k=None, filters=None):
         results = keyword_search(cur, query, top_k, filters)
     elif mode == "semantic":
         results = semantic_search(cur, query, top_k, filters)
+    elif mode == "claim":
+        results = claim_search(cur, query, top_k, filters)
     else:
         results = hybrid_search(cur, query, top_k, filters)
     elapsed = time.time() - start
@@ -139,35 +168,26 @@ def search_by_patent_id(cur, doc_number, top_k=10):
     if not row:
         return None, []
     pid, vec, title, abstract, claims, classification = row
-    patent_info = {"doc_number": doc_number, "title": title, "abstract": abstract, "claims": claims, "classification": classification}
+    patent_info = {"doc_number": doc_number, "title": title, "abstract": abstract,
+                   "claims": claims, "classification": classification}
 
-    # using its embedding find similar patents
+    # using its embedding find similar patents (vec comes back as text -> cast it)
     cur.execute("""
         SELECT id, doc_number, title, abstract,
-               1 - (abstract_embedding <=> %s) AS score
+               1 - (abstract_embedding <=> %s::vector) AS score
         FROM patents
         WHERE doc_number != %s AND abstract_embedding IS NOT NULL
-        ORDER BY abstract_embedding <=> %s
+        ORDER BY abstract_embedding <=> %s::vector
         LIMIT %s
     """, [vec, doc_number, vec, top_k])
     similar = cur.fetchall()
     return patent_info, similar
 
 
-
-def search_by_claim(cur, claim_text, top_k=10, filters=None):
-    """input claim text, find patents with similar claims"""
-    query_vec = encode_query(claim_text)
-    where, params = build_filters(filters)
-    cur.execute(f"""
-        SELECT id, doc_number, title, abstract,
-               1 - (claims_embedding <=> %s::vector) AS score
-        FROM patents
-        WHERE claims_embedding IS NOT NULL {where}
-        ORDER BY claims_embedding <=> %s::vector
-        LIMIT %s
-    """, [query_vec] + params + [query_vec, top_k])
-    return cur.fetchall()
+def search_by_claim(cur, claim_text, top_k=10, filters=None, claim1_boost=1.5):
+    """input claim text, find patents with similar claims (claim1 boosted)"""
+    return claim_search(cur, claim_text, top_k=top_k, filters=filters,
+                        claim1_boost=claim1_boost)
 
 
 def browse_by_classification(cur, prefix_code):
@@ -179,4 +199,3 @@ def browse_by_classification(cur, prefix_code):
         ORDER BY doc_number
     """, [prefix_code + "%"])
     return cur.fetchall()
-

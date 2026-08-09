@@ -1,4 +1,5 @@
 # Build a PostgreSQL database for storing patents and their embeddings
+# get_conn() -> create_tables(conn) -> load_patents(conn)
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -38,9 +39,19 @@ def create_tables(conn):
                 abstract_tsv TSVECTOR,
                 title_tsv TSVECTOR,
 
-                -- vector columns for embeddings, bge-base-en-v1.5(768 deminsion)
-                abstract_embedding VECTOR(768),
-                claims_embedding VECTOR(768)
+                -- vector column for abstract, bge-base-en-v1.5 (768 dimensions)
+                -- per-claim vectors live in claim_embeddings; claim1 boost is applied
+                abstract_embedding VECTOR(768)
+            );
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS claim_embeddings (
+                id SERIAL PRIMARY KEY,
+                patent_id INTEGER REFERENCES patents(id),
+                claim_index INTEGER,
+                claim_text TEXT,
+                embedding VECTOR(768)
             );
         """)
         # create GIN index for full-text search
@@ -49,6 +60,9 @@ def create_tables(conn):
 
         # classification index for filtering
         cur.execute("CREATE INDEX IF NOT EXISTS idx_classification ON patents USING BTREE(classification);")
+
+        # look up a patent's claims quickly by patent_id
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_claim_patent ON claim_embeddings USING BTREE(patent_id);")
     conn.commit()
 
 # load patents from JSON
@@ -86,6 +100,15 @@ def load_patents(conn):
     conn.commit()
     print(f"Loaded {len(patents)} patents")
 
+# clear all embeddings so they can be regenerated from scratch
+# run this before re-embedding when you change the model or the prefix logic
+def reset_embeddings(conn):
+    with conn.cursor() as cur:
+        cur.execute("TRUNCATE claim_embeddings RESTART IDENTITY;")
+        cur.execute("UPDATE patents SET abstract_embedding = NULL;")
+    conn.commit()
+    print("Embeddings reset")
+
 # embedding is done, create HNSW indexes
 def create_vector_index(conn):
     with conn.cursor() as cur:
@@ -95,7 +118,7 @@ def create_vector_index(conn):
         """)
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_claims_vec
-            ON patents USING hnsw(claims_embedding vector_cosine_ops);
+            ON claim_embeddings USING hnsw(embedding vector_cosine_ops);
         """)
     conn.commit()
     print("HNSW indexes created")
@@ -105,5 +128,3 @@ if __name__ == "__main__":
     create_tables(conn)
     load_patents(conn)
     conn.close()
-
-

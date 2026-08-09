@@ -9,5 +9,9 @@ TOP_K = 10
 
 # embedding model
 MODELS = [
-    ("BAAI/bge-base-en-v1.5", "Represent this sentence: "),
+    ("BAAI/bge-base-en-v1.5", "Represent this sentence for searching relevant passages: "),
 ]
+
+RRF_WEIGHTS = {"semantic": 0.5, "keyword": 0.3, "claim": 0.2}
+CLAIM1_BOOST = 1.5
+RRF_K = 60
