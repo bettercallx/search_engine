@@ -73,9 +73,6 @@ brew services start postgresql@16
 brew install pgvector
 ```
 
-<details>
-<summary>Fallback: build pgvector from source (if the brew version doesn't match your PostgreSQL)</summary>
-
 ```bash
 cd /tmp
 git clone https://github.com/pgvector/pgvector.git
