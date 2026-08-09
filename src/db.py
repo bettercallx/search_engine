@@ -13,10 +13,10 @@ import config
 # Connect to the PostgreSQL database
 def get_conn():
     return psycopg2.connect(
-        dbname="patent_search",
-        user="lixiang",
-        host="localhost",
-        port=5432
+        dbname=config.DB_NAME,
+        user=config.DB_USER,
+        host=config.DB_HOST,
+        port=config.DB_PORT,
     )
 
 # create tables for patents

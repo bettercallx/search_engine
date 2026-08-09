@@ -10,7 +10,10 @@ from src.db import get_conn
 from src.embedder import embed_patents
 
 def load_new_files():
-    folder = Path(config.DATA_DIR)
+    folder = Path(config.NEW_DATA_DIR)
+    if not folder.exists():
+        print("No new data folder yet")
+        return
     new_files = list(folder.glob("new_*.json"))
     if not new_files:
         print("No new files found")

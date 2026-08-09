@@ -1,0 +1,21 @@
+# Patent Search Engine — direct dependencies
+# Install with:  pip install -r requirements.txt
+# (Python 3.9; also requires a running PostgreSQL with the pgvector extension.)
+
+# Embedding model (BAAI/bge-base-en-v1.5). Pulls in torch/transformers/etc.
+sentence-transformers==5.1.2
+
+# PostgreSQL driver. The -binary build ships precompiled wheels, so no local
+# pg_config / build toolchain is needed.
+psycopg2-binary==2.9.12
+
+# Web API layer
+fastapi==0.128.8
+uvicorn==0.39.0
+
+# Online ingest: scraping single patents from Google Patents
+beautifulsoup4==4.15.0
+requests==2.32.5
+
+# Numerical arrays (embeddings -> lists for pgvector)
+numpy==2.0.2

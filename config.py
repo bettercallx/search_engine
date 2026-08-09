@@ -1,6 +1,15 @@
+import os
+
+# Database connection
+DB_NAME = os.getenv("PATENT_DB_NAME", "patent_search")
+DB_USER = os.getenv("PATENT_DB_USER", "postgres")
+DB_HOST = os.getenv("PATENT_DB_HOST", "localhost")
+DB_PORT = int(os.getenv("PATENT_DB_PORT", "5432"))
+
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent  # search_engine/
 DATA_DIR = PROJECT_ROOT / "patent_data_small"
+NEW_DATA_DIR = PROJECT_ROOT / "new_patent_data" 
 
 EMBEDDING_FIELDS = ["abstract", "claims"]#"detailed_description"
 INDEX_PATH = "index"
