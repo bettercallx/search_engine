@@ -1,14 +1,16 @@
-# search_engine/app.py
-
-# pip install fastapi uvicorn
-# uvicorn app:app --reload --port 8000
-
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi import FastAPI, Query
 from typing import Optional
-from src.searcher import search, search_by_patent_id, claim_search, browse_by_classification
+from src.searcher import search, search_by_patent_id, claim_search, browse_by_classification, get_patent_detail
 from src.db import get_conn
 
 app = FastAPI(title="Patent Search Engine")
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+@app.get("/")
+def index():
+    return FileResponse(STATIC_DIR / "index.html")
 
 @app.get("/search")
 def search_api(
@@ -34,6 +36,17 @@ def similar_api(doc_number: str, top_k: int = 10):
     cur.close()
     conn.close()
     return {"patent": info, "similar": similar}
+
+@app.get("/patent/{doc_number}")
+def patent_detail_api(doc_number: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    detail = get_patent_detail(cur, doc_number)
+    cur.close()
+    conn.close()
+    if not detail:
+        return {"error": "Patent not found"}
+    return detail
 
 @app.get("/claim-search")
 def claim_search_api(claim_text: str, top_k: int = 10):

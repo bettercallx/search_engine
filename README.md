@@ -125,6 +125,10 @@ Patents ingested online (via `/ingest`) are written separately to `new_patent_da
 ./run.sh --reembed    # keep the DB, wipe & regenerate all embeddings, use after changing the model or prefix logic
 ```
 
+The server starts on http://127.0.0.1:8000.
+
+Interactive API docs (Swagger UI) are at http://127.0.0.1:8000/docs to try each endpoint.
+
 ---
 
 ## API
@@ -188,7 +192,7 @@ POST /ingest/12146706
 
 ## Known limitations
 
-- **Online ingest produces "second-class" data.** Patents fetched from Google
+- **Online ingest produces data.** Patents fetched from Google
   Patents lack fields the source XML has (`detailed_description`, `bibtex` come
   back empty). Classification codes use the slashed CPC form (`B60B7/0013`)
   rather than the dataset's compact form (`B60B704FI`), and the deepest code is

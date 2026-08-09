@@ -185,6 +185,23 @@ def search_by_patent_id(cur, doc_number, top_k=10):
     similar = cur.fetchall()
     return patent_info, similar
 
+def get_patent_detail(cur, doc_number):
+    """input patent ID, return its full detail (no similarity search)"""
+    cur.execute("""
+        SELECT doc_number, title, abstract, claims, classification
+        FROM patents WHERE doc_number = %s
+    """, [doc_number])
+    row = cur.fetchone()
+    if not row:
+        return None
+    doc, title, abstract, claims, classification = row
+    return {
+        "doc_number": doc,
+        "title": title,
+        "abstract": abstract,
+        "claims": claims,
+        "classification": classification,
+    }
 
 def browse_by_classification(cur, prefix_code, limit=20, offset=0):
     cur.execute("""
