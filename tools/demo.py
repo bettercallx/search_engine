@@ -1,10 +1,9 @@
-# tools/demo.py
 import sys
 from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.searcher import search, search_by_patent_id, search_by_claim, browse_by_classification
+from src.searcher import search, search_by_patent_id, claim_search, browse_by_classification
 from src.db import get_conn
 
 def run_demo():
@@ -28,7 +27,7 @@ def run_demo():
 
     print("\n=== CLAIM SEARCH ===")
     claim = "A wheel assembly comprising a hub motor integrated into the wheel rim"
-    results = search_by_claim(cur, claim)
+    results = claim_search(cur, claim)
     for pid, doc_num, title, abstract, score in results[:5]:
         print(f"  [{score:.4f}] {doc_num}: {title[:80]}")
 

@@ -4,7 +4,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import time
-from src.searcher import search, search_by_claim, get_search_model
+from src.searcher import search, get_search_model
 from src.db import get_conn
 
 QUERIES = [
@@ -15,7 +15,7 @@ QUERIES = [
     "tire pressure monitoring wireless",
 ]
 
-# mannual annotation:query -> top5 doc_number
+# mannual annotation: query -> top5 doc_number
 GROUND_TRUTH = {
     "wheel hub motor assembly": ["20250083473", "20240198724", "20240109366"],
     "tire pressure monitoring wireless": ["20240083199"],
@@ -71,13 +71,13 @@ def benchmark_filter_impact():
   - At 10M patents, filtering by classification BEFORE vector search
     drastically reduces ANN comparisons. A partial index or partitioned
     table by classification prefix would make this even faster.
-  - Hybrid search (keyword + semantic + RRF merge) costs roughly 2x
-    a single-mode search since it runs both channels. This is acceptable
-    because the two channels catch different types of relevance.
+  - Hybrid search (keyword + semantic + claim + RRF merge) costs roughly
+    3x a single-mode search since it runs all three channels. This is
+    acceptable because the channels catch different types of relevance.
 """)
 
 def benchmark_relevance():
-    """检查 top5 结果是否包含已知相关专利"""
+    """check whether top5 results contain known-relevant patents"""
     print("=" * 70)
     print("BENCHMARK: Relevance Check (ground truth)")
     print("=" * 70)
@@ -106,12 +106,13 @@ def benchmark_embedding_strategies():
     model, prefix = get_search_model()
 
     query = "wheel hub motor integrated into rim"
+    # query side gets the instruction prefix
     query_vec = model.encode(prefix + query, normalize_embeddings=True).tolist()
 
-    # Strategy 1: abstract embedding
     print(f"\nQuery: '{query}'")
     print("-" * 50)
 
+    # Strategy 1: abstract embedding (patents.abstract_embedding)
     start = time.time()
     cur.execute("""
         SELECT doc_number, title,
@@ -128,43 +129,46 @@ def benchmark_embedding_strategies():
     for doc_num, title, score in results_abstract:
         print(f"    [{score:.4f}] {doc_num}: {title[:65]}")
 
-    # Strategy 2: claims embedding
+    # Strategy 2: claim embedding (claim_embeddings table, best claim per patent)
     start = time.time()
     cur.execute("""
-        SELECT doc_number, title,
-               1 - (claims_embedding <=> %s::vector) AS score
-        FROM patents
-        WHERE claims_embedding IS NOT NULL
-        ORDER BY claims_embedding <=> %s::vector
+        SELECT p.doc_number, p.title,
+               MAX(1 - (ce.embedding <=> %s::vector)) AS score
+        FROM claim_embeddings ce
+        JOIN patents p ON p.id = ce.patent_id
+        GROUP BY p.doc_number, p.title
+        ORDER BY score DESC
         LIMIT 5
-    """, [query_vec, query_vec])
+    """, [query_vec])
     results_claims = cur.fetchall()
     t_claims = time.time() - start
 
-    print(f"\n  Strategy: Claims embedding ({t_claims:.3f}s)")
+    print(f"\n  Strategy: Claim embedding, best-claim per patent ({t_claims:.3f}s)")
     for doc_num, title, score in results_claims:
         print(f"    [{score:.4f}] {doc_num}: {title[:65]}")
 
-    # Strategy 3: weighted combination (abstract 0.6 + claims 0.4)
+    # Strategy 3: weighted combination (abstract 0.6 + best-claim 0.4)
     start = time.time()
     cur.execute("""
-        SELECT doc_number, title,
-               0.6 * (1 - (abstract_embedding <=> %s::vector)) +
-               0.4 * (1 - (claims_embedding <=> %s::vector)) AS score
-        FROM patents
-        WHERE abstract_embedding IS NOT NULL AND claims_embedding IS NOT NULL
+        SELECT p.doc_number, p.title,
+               0.6 * (1 - (p.abstract_embedding <=> %s::vector)) +
+               0.4 * MAX(1 - (ce.embedding <=> %s::vector)) AS score
+        FROM patents p
+        JOIN claim_embeddings ce ON ce.patent_id = p.id
+        WHERE p.abstract_embedding IS NOT NULL
+        GROUP BY p.doc_number, p.title, p.abstract_embedding
         ORDER BY score DESC
         LIMIT 5
     """, [query_vec, query_vec])
     results_weighted = cur.fetchall()
     t_weighted = time.time() - start
 
-    print(f"\n  Strategy: Weighted (0.6*abstract + 0.4*claims) ({t_weighted:.3f}s)")
+    print(f"\n  Strategy: Weighted (0.6*abstract + 0.4*best-claim) ({t_weighted:.3f}s)")
     for doc_num, title, score in results_weighted:
         print(f"    [{score:.4f}] {doc_num}: {title[:65]}")
 
-    # Strategy 4: per-claim search (find which individual claim matches best)
-    print(f"\n  Strategy: Per-claim matching")
+    # Strategy 4: brute-force per-claim matching in Python (reference / sanity check)
+    print(f"\n  Strategy: Per-claim brute force (first 50 patents)")
     start = time.time()
     cur.execute("SELECT doc_number, title, claims FROM patents LIMIT 50")
     rows = cur.fetchall()
@@ -176,7 +180,8 @@ def benchmark_embedding_strategies():
         for i, claim in enumerate(claims):
             if len(claim.strip()) < 10:
                 continue
-            claim_vec = model.encode(prefix + claim, normalize_embeddings=True).tolist()
+            # document side: no prefix (matches embedder.py)
+            claim_vec = model.encode(claim, normalize_embeddings=True).tolist()
             score = sum(a * b for a, b in zip(query_vec, claim_vec))
             claim_results.append((doc_num, title, i + 1, claim[:80], score))
 
@@ -190,11 +195,15 @@ def benchmark_embedding_strategies():
     print(f"""
   Commentary:
   - Abstract embedding captures high-level topic similarity.
-  - Claims embedding captures legal/technical scope overlap.
+  - Claim embedding captures legal/technical scope overlap; taking the
+    best-matching claim per patent (MAX) mirrors what claim_search does.
   - Weighted combination balances both signals.
-  - Per-claim matching is most precise for finding specific overlapping
-    claims but is O(n*m) and too slow for large-scale retrieval.
-    It's best used as a reranking step on top-k candidates.
+  - Per-claim brute force is the most precise reference but is O(n*m)
+    and too slow for large-scale retrieval; it belongs in a reranking
+    step over top-k candidates, not first-stage retrieval.
+  - Note strategies 2/3 read from the precomputed claim_embeddings table
+    (ANN-indexed), while strategy 4 re-encodes on the fly -- the latter
+    is a correctness reference, not a speed comparison.
 """)
 
     cur.close()

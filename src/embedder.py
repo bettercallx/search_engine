@@ -8,7 +8,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import config
 from src.db import get_conn
 from sentence_transformers import SentenceTransformer
-import numpy as np
 
 def get_model():
     # config prefix is the query-side instruction; not used for documents here
@@ -25,7 +24,7 @@ def embed_patents():
     cur.execute("""
         SELECT id, abstract, claims
         FROM patents
-        WHERE abstract_embedding IS NULL
+        WHERE abstract_embedding IS NULL OR id NOT IN (SELECT DISTINCT patent_id FROM claim_embeddings)
     """)
     rows = cur.fetchall()
     print(f"Generating embeddings for {len(rows)} patents...")

@@ -62,11 +62,13 @@ def semantic_search(cur, query, top_k=10, filters=None):
     """, [query_vec] + params + [query_vec, top_k])
     return cur.fetchall()
 
-def claim_search(cur, query, top_k=10, filters=None, claim1_boost=1.5):
+def claim_search(cur, query, top_k=10, filters=None, claim1_boost=None):
     """per-claim vector search; claim1 (claim_index = 0) is boosted at query time.
     Scores per patent = best boosted claim similarity."""
     query_vec = encode_query(query)
     where, params = build_filters(filters)  # clauses start with "AND ", patents columns
+    if claim1_boost is None:
+        claim1_boost = config.CLAIM1_BOOST
     cur.execute(f"""
         SELECT p.id, p.doc_number, p.title, p.abstract,
                MAX((1 - (ce.embedding <=> %s::vector))
@@ -184,18 +186,18 @@ def search_by_patent_id(cur, doc_number, top_k=10):
     return patent_info, similar
 
 
-def search_by_claim(cur, claim_text, top_k=10, filters=None, claim1_boost=1.5):
-    """input claim text, find patents with similar claims (claim1 boosted)"""
-    return claim_search(cur, claim_text, top_k=top_k, filters=filters,
-                        claim1_boost=claim1_boost)
-
-
-def browse_by_classification(cur, prefix_code):
-    """input classification prefix, list patents"""
+def browse_by_classification(cur, prefix_code, limit=20, offset=0):
     cur.execute("""
         SELECT doc_number, title, classification
         FROM patents
         WHERE classification LIKE %s
         ORDER BY doc_number
-    """, [prefix_code + "%"])
-    return cur.fetchall()
+        LIMIT %s OFFSET %s
+    """, [prefix_code + "%", limit, offset])
+    rows = cur.fetchall()
+
+    # return total count for pagination
+    cur.execute("SELECT COUNT(*) FROM patents WHERE classification LIKE %s",
+                [prefix_code + "%"])
+    total = cur.fetchone()[0]
+    return rows, total
