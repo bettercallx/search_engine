@@ -24,3 +24,5 @@ MODELS = [
 RRF_WEIGHTS = {"semantic": 0.5, "keyword": 0.3, "claim": 0.2}
 CLAIM1_BOOST = 1.5
 RRF_K = 60
+
+RERANKER_MODEL = "BAAI/bge-reranker-base"

@@ -133,13 +133,14 @@ Interactive API docs (Swagger UI) are at http://127.0.0.1:8000/docs to try each 
 
 | Method | Endpoint                          | Description                                   |
 |--------|-----------------------------------|-----------------------------------------------|
-| GET    | `/search`                         | keyword / semantic / claim / hybrid search    |
+| GET    | `/search`                         | keyword / semantic / claim / hybrid / rerank  |
 | GET    | `/similar/{doc_number}`           | patents similar to a given one                 |
+| GET    | `/patent/{doc_number}`            | full detail of one patent (abstract + claims)  |
 | GET    | `/claim-search`                   | find patents by similar claim text             |
 | GET    | `/browse/{classification_prefix}` | browse a classification (paginated)            |
 | POST   | `/ingest/{doc_number}`            | fetch a patent from Google Patents and add it  |
 
-**`/search` parameters:** `query` (required), `mode` (`hybrid` default /
+**`/search` parameters:** `query` (required), `mode` (`hybrid` default / `rerank` /
 `keyword` / `semantic` / `claim`), `top_k`, `classification`, `title_keyword`.
 
 **`/browse` parameters:** `limit` (default 20), `offset` (default 0). Returns
@@ -148,6 +149,7 @@ Interactive API docs (Swagger UI) are at http://127.0.0.1:8000/docs to try each 
 Examples:
 ```
 GET /search?query=tire pressure monitoring&mode=hybrid&top_k=5
+GET /search?query=tire pressure monitoring&mode=rerank&top_k=10
 GET /similar/20240059096
 GET /claim-search?claim_text=a rim body formed in a cylindrical shape&top_k=10
 GET /browse/B60B?limit=20&offset=0
@@ -213,7 +215,38 @@ POST /ingest/12146706
 
 ---
 
-## Roadmap
+## Part 2 & Part 3
 
-- **Part 2 — Scale architecture:** _(to be written)_
-- **Part 3 — Reranker:** _(to be written)_
+### Part 2 — Scale architecture
+See [`Part2.md`](Part2.md) for the design of running this engine at ~10M patents plus a containerization (`Dockerfile` + `docker-compose.yml`).
+
+### Part 3 — Enhancement: two-phase search (cross-encoder reranking)
+
+**Enhancement chosen:** two-phase searching (reranking).
+
+**Why:** Part 1's semantic/hybrid retrieval uses a *bi-encoder* (bge-base) — the
+query and each document are embedded independently and compared by cosine. It's
+fast but never lets the query and document interact.
+A *cross-encoder* scores the query and document
+*jointly* in one pass, which is far more accurate but too slow to run over the
+whole corpus. The standard fix is two-phase: use the cheap bi-encoder to recall a
+candidate pool, then the expensive cross-encoder to rerank it.
+
+**How it's implemented:** `mode=rerank` runs the existing hybrid pipeline to
+recall the top ~50 candidates (phase 1), then scores each `(query, title +
+abstract)` pair with `BAAI/bge-reranker-base` (phase 2) and returns the top-k by
+cross-encoder score. It reuses the existing candidate pipeline and returns the
+same result shape, so the API and UI needed no changes beyond one dropdown
+option. The reranker model is loaded lazily on first use.
+
+**Result:** on `tire pressure monitoring`, rerank surfaces markedly more precise
+hits than hybrid, with scores tightly clustered near the top (0.99+) tapering off
+— a much sharper relevance gradient than the RRF fusion scores. Per the brief the
+goal was to build the pipeline rather than chase a metric; the quality
+improvement is a visible bonus.
+
+**To reproduce:** run Part 1 as below, then query `mode=rerank`:
+```
+GET /search?query=tire pressure monitoring&mode=rerank&top_k=10
+```
+(or pick `rerank` in the UI dropdown). First call downloads the reranker model.

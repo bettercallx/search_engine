@@ -7,12 +7,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 from src.db import get_conn
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import time
 
 
 _model = None
 _prefix = None
+_reranker = None
 
 def get_search_model():
     global _model, _prefix
@@ -20,6 +21,13 @@ def get_search_model():
         model_name, _prefix = config.MODELS[0]
         _model = SentenceTransformer(model_name)
     return _model, _prefix
+
+def get_reranker():
+    # cross-encoder for two-phase reranking; loaded lazily on first use
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder(config.RERANKER_MODEL)
+    return _reranker
 
 def encode_query(query):
     # prepend the BGE instruction
@@ -117,6 +125,27 @@ def hybrid_search(cur, query, top_k=10, filters=None,
         results.append((pid, doc_num, title, abstract, score))
     return results
 
+
+def rerank_search(cur, query, top_k=10, filters=None, candidate_n=50):
+    """Two-phase: hybrid recall (candidate_n) -> cross-encoder rerank -> top_k.
+    Phase 1 (bi-encoder hybrid) is cheap and casts a wide net; phase 2
+    (cross-encoder) is expensive but accurate, scoring each (query, doc) pair
+    jointly instead of comparing independent embeddings."""
+    # phase 1: recall a wider candidate pool with the existing hybrid pipeline
+    candidates = hybrid_search(cur, query, top_k=candidate_n, filters=filters)
+    if not candidates:
+        return []
+
+    # phase 2: cross-encoder scores each (query, title+abstract) pair
+    reranker = get_reranker()
+    pairs = [(query, f"{c[2]} {c[3]}") for c in candidates]  # c[2]=title, c[3]=abstract
+    scores = reranker.predict(pairs)
+
+    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+    # return same 5-tuple shape as other channels, with the rerank score
+    return [(c[0], c[1], c[2], c[3], float(s)) for c, s in ranked[:top_k]]
+
+
 # ---------- Filter Building ----------
 
 def build_filters(filters):
@@ -151,6 +180,8 @@ def search(query, mode="hybrid", top_k=None, filters=None):
         results = semantic_search(cur, query, top_k, filters)
     elif mode == "claim":
         results = claim_search(cur, query, top_k, filters)
+    elif mode == "rerank":
+        results = rerank_search(cur, query, top_k, filters)
     else:
         results = hybrid_search(cur, query, top_k, filters)
     elapsed = time.time() - start
