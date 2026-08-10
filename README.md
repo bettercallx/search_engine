@@ -73,6 +73,8 @@ brew services start postgresql@16
 brew install pgvector
 ```
 
+if brew version doesn't match
+
 ```bash
 cd /tmp
 git clone https://github.com/pgvector/pgvector.git
@@ -81,7 +83,6 @@ export PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config
 make
 make install
 ```
-</details>
 
 ### 2. Python dependencies
 

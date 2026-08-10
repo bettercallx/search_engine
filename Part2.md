@@ -143,3 +143,30 @@ Options:
 6. **RRF weights & claim-1 boost are untuned constants** At scale they should
    come from a real evaluation set, not hand-picked values.
 
+---
+
+## Containerization
+
+**Files** `Dockerfile`, `docker-compose.yml`.
+
+**What it shows**
+- The app packaged as a container (`Dockerfile`).
+- Postgres + pgvector via the official `pgvector/pgvector:pg16` image.
+- The two wired via `docker-compose.yml`, the app configured entirely through the
+  `PATENT_DB_*` environment variables Part 1 already reads (host = the compose
+  service name `db`, not localhost). A healthcheck makes the app wait until the
+  DB is ready.
+
+**Run**
+```bash
+docker compose up --build
+# db  -> Postgres 16 + pgvector on :5432
+# app -> FastAPI on http://localhost:8000  (UI at /, docs at /docs)
+```
+
+**Initialize data (one-time, manual — the DB starts empty)**
+```bash
+docker compose exec app python3 src/db.py         # create tables + load
+docker compose exec app python3 src/embedder.py   # generate embeddings
+docker compose exec app python3 -c "from src.db import get_conn, create_vector_index; c=get_conn(); create_vector_index(c); c.close()"
+```

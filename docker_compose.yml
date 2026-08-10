@@ -1,0 +1,40 @@
+# Part 2 PoC — orchestrate the Part 1 app + a pgvector-enabled Postgres.
+services:
+  db:
+    # official pgvector image = Postgres with the vector extension preinstalled,
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: patent_search
+      POSTGRES_USER: patent
+      POSTGRES_PASSWORD: patent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patent -d patent_search"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy   # wait until db is actually ready
+    environment:
+      # Part 1 reads these env vars for the DB connection (already wired in config.py).
+      PATENT_DB_HOST: db
+      PATENT_DB_NAME: patent_search
+      PATENT_DB_USER: patent
+      PATENT_DB_PORT: "5432"
+      PGPASSWORD: patent
+    ports:
+      - "8000:8000"
+    volumes:
+      # cache the downloaded embedding model across restarts/rebuilds
+      - hf_cache:/root/.cache/huggingface
+
+volumes:
+  pgdata:
+  hf_cache:
