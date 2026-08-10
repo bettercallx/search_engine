@@ -68,7 +68,7 @@ brew install postgresql@16
 brew services start postgresql@16
 ```
 
-**pgvector extension** (simplest — via brew):
+**pgvector extension:**
 ```bash
 brew install pgvector
 ```
