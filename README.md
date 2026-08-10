@@ -158,6 +158,43 @@ POST /ingest/12146706
 
 ---
 
+## Hybrid search performance (timing with vs. without hybrid)
+
+Same query (`tire pressure monitoring`), steady state (model already loaded),
+~640 patents:
+
+| mode      | what runs                                  | time    |
+|-----------|--------------------------------------------|---------|
+| keyword   | one SQL full-text query (GIN index)        | ~0.010s |
+| semantic  | encode query + one vector search (HNSW)    | ~0.169s |
+| hybrid    | keyword + semantic + claim, fused with RRF | ~0.107s |
+
+**Observations.**
+
+- **Keyword is the cheapest** — it's a single `tsvector` lookup on a GIN index.
+- **The vector-based modes cost more** because each must encode the query with
+  bge-base and do an ANN search; that per-query encode dominates at this scale.
+
+At 10M patents, filtering `classification LIKE 'B60B%'` first can cut candidates from
+millions to thousands, so the ANN search runs over a tiny fraction of the corpus
+instead of all of it. Concretely, the levers are:
+
+- **Filter-first / predicate pushdown** — apply classification & keyword
+  constraints in SQL to shrink the set the vector index must consider.
+- **Partitioning by classification** (see `Part2.md`) so a filtered query hits a
+  single partition's smaller index.
+- **ANN indexes (HNSW)** instead of exact search, trading a little recall for
+  large speedups.
+- **Parallel channels** — the three channels are independent and can run
+  concurrently, so hybrid latency approaches the slowest single channel rather
+  than their sum.
+
+So hybrid is a bit more expensive on a tiny in-memory dataset, but the same
+structure becomes a performance *advantage* once the corpus is large enough that
+narrowing the search space matters.
+
+---
+
 ## Design decisions
 
 - **Per-claim embeddings, not concatenated.** Concatenating all claims into one
